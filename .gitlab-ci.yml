@@ -1,0 +1,135 @@
+stages:
+    - packer
+    - versioning
+    - terraform
+    - upload_vmware
+    - info-db
+
+packer_create:
+    stage: packer
+    tags:
+        - linux
+    script:
+        - packer init .
+        - packer validate .
+        - packer build -force -on-error=ask .
+        - echo "skip"
+
+clone_VM:
+    stage: versioning
+    tags:
+        - linux
+    before_script:
+        - chmod +x Upload_VMware/versioning_VM.sh
+        - export GOVC_PASSWORD=$(echo $GOVC_PASSWORD_BASE64 | base64 --decode)
+        - govc session.login -k=true -u $GOVC_USERNAME:$GOVC_PASSWORD@$GOVC_URL
+    script:
+        - Upload_VMware/versioning_VM.sh
+    after_script:
+        - govc session.logout
+    artifacts:
+        paths:
+            - variables.txt
+        expire_in: 1 day
+
+versioning_template_5:
+    stage: versioning
+    tags:
+        - linux
+    script:
+        - pwsh -ExecutionPolicy Bypass -File Versioning/versioning_5.ps1
+
+terraform_create:
+    stage: terraform
+    tags:
+        - linux
+    script:
+        - terraform -chdir=Terraform init
+        - terraform -chdir=Terraform plan 
+        - terraform -chdir=Terraform apply -auto-approve
+    artifacts:
+        untracked: yes
+        expose_as: "terraform"
+        paths:
+            - Terraform
+        expire_in: 1 day
+
+change_conf_nics:
+    stage: terraform
+    tags:
+        - linux
+    needs:
+        - terraform_create
+    before_script:
+        - export GOVC_PASSWORD=$(echo $GOVC_PASSWORD_BASE64 | base64 --decode)
+        - govc session.login -u $GOVC_USERNAME:$GOVC_PASSWORD@$GOVC_URL -k=true
+    script:
+        - govc vm.network.add -vm "ubuntu_2004_test_tf" -net "Parcheggio" -net.adapter "vmxnet3"
+        - govc vm.network.add -vm "ubuntu_2004_test_tf" -net "Parcheggio" -net.adapter "vmxnet3"
+        - govc vm.network.change -vm="ubuntu_2004_test_tf" -net "Parcheggio" ethernet-1
+        - govc vm.network.change -vm="ubuntu_2004_test_tf" -net "Parcheggio" ethernet-2
+        - govc device.disconnect -vm="ubuntu_2004_test_tf" ethernet-1
+        - govc device.disconnect -vm="ubuntu_2004_test_tf" ethernet-2
+    after_script:
+        - govc session.logout
+
+terraform_destroy_valid:
+    stage: terraform
+    tags:
+        - linux
+    when: manual
+    needs: 
+        - terraform_create
+    script:
+        - terraform -chdir=Terraform destroy -auto-approve
+    dependencies:
+        - terraform_create
+
+terraform_destroy_invalid:
+    stage: terraform
+    tags:
+        - linux
+    when: manual
+    needs: 
+        - terraform_create
+    script:
+        - terraform -chdir=Terraform destroy -auto-approve
+        - echo "Template non valido"; exit 78
+    dependencies:
+        - terraform_create
+    allow_failure: false
+
+upload_content-library:
+    stage: upload_vmware
+    tags:
+        - linux
+    needs:
+        - terraform_destroy_valid
+        - job: clone_VM
+          artifacts: true
+    before_script:
+        - source variables.txt
+        - chmod +x Upload_VMware/upload_vcenter.sh
+        - export GOVC_PASSWORD=$(echo $GOVC_PASSWORD_BASE64 | base64 --decode)
+        - govc session.login
+    script:
+        - govc library.rm $CL_DEPLOY_TEMPLATE"/"$VC_TEMPLATE_NAME
+        - govc vm.clone -on=False -vm $VM_VERSIONED -folder="$VC_VM_TEMPLATE_MOVE_FOLDER" -ds=$DATASTORE_TARGET $VC_VM_EPHEMERAL
+        - govc library.clone -vm $VC_VM_EPHEMERAL -ds $DATASTORE_TARGET -cluster=$VC_CLUSTER_NAME $CL_DEPLOY_TEMPLATE $VC_TEMPLATE_NAME
+        - govc vm.destroy $VC_VM_EPHEMERAL        
+    after_script:
+        - govc session.logout
+    dependencies:
+        - terraform_destroy_valid
+        - clone_VM
+
+update-info-db:
+    stage: info-db
+    tags:
+        - linux
+    needs:
+        - clone_VM
+        - upload_content-library
+    script:
+        - source variables.txt
+        - python3 Script/update-info.py
