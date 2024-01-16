@@ -1,4 +1,4 @@
-## An Automation used to prepare VM templates and upload them on the cloud infrastructure:
+## An Automation used to prepare VM templates and upload them on a private cloud infrastructure:
 
 ## Description of Used Components:
 
