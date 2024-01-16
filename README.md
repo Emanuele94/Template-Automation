@@ -1,3 +1,5 @@
+## An Automation used to prepare VM templates and upload them on the cloud infrastructure:
+
 ## Description of Used Components:
 
 1. **Gitlab CI:**
