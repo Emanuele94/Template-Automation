@@ -1,0 +1,9 @@
+- name: Upgrade Distro
+  hosts: all
+  become: true
+
+  tasks:
+  - name: Update and Upgrade APT Packages
+    apt:
+      upgrade: yes
+      update_cache: yes
